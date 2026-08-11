@@ -40,7 +40,7 @@ extension LibreLoopCGMManager {
             llog("expiry alerts: scheduling \(alerts.count) alert(s) for activatedAt=\(activatedAt)")
             Task {
                 for alert in alerts {
-                    await delegate?.issueAlert(alert)
+                    delegate?.issueAlert(alert)
                 }
             }
         }
@@ -55,7 +55,7 @@ extension LibreLoopCGMManager {
         llog("expiry alerts: retracting \(identifiers.count) identifier(s)")
         Task {
             for identifier in identifiers {
-                await delegate?.retractAlert(identifier: identifier)
+                delegate?.retractAlert(identifier: identifier)
             }
         }
     }
@@ -177,7 +177,7 @@ extension LibreLoopCGMManager {
             hasIssuedReScanAlert = false
             let id = Alert.Identifier(managerIdentifier: pluginIdentifier, alertIdentifier: Self.needsReScanAlertID)
             let delegate = cgmManagerDelegate
-            Task { await delegate?.retractAlert(identifier: id) }
+            Task { delegate?.retractAlert(identifier: id) }
         }
         self.monitor = monitor
         self.connectedAt = Date()
@@ -393,7 +393,7 @@ extension LibreLoopCGMManager {
         }
 
         guard let content else {
-            Task { await delegate?.retractAlert(identifier: identifier) }
+            Task { delegate?.retractAlert(identifier: identifier) }
             return
         }
         let alert = Alert(
@@ -403,7 +403,7 @@ extension LibreLoopCGMManager {
             trigger: .immediate,
             interruptionLevel: content.level
         )
-        Task { await delegate?.issueAlert(alert) }
+        Task { delegate?.issueAlert(alert) }
     }
 
     /// Handle the per-minute lifeCount surfaced by every realtime glucose
@@ -1080,7 +1080,7 @@ extension LibreLoopCGMManager {
             trigger: .immediate,
             interruptionLevel: .timeSensitive
         )
-        Task { await delegate?.issueAlert(alert) }
+        Task { delegate?.issueAlert(alert) }
     }
 
     private static func mapTrend(_ trend: LibreLoopGlucoseSample.Trend) -> GlucoseTrend? {
