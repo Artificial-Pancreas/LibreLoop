@@ -119,44 +119,39 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
                             onLifeCount: @escaping LifeCountHandler = { _ in },
                             onReady: @escaping ReadyHandler = {},
                             onRawRead: @escaping RawReadHandler = { _ in }) {
-        lock.lock()
-        defer { lock.unlock() }
-        self.readingHandler = onReading
-        self.disconnectHandler = onDisconnect
-        self.statusHandler = onStatus
-        self.historicalPageHandler = onHistoricalPage
-        self.clinicalRecordHandler = onClinicalRecord
-        self.embeddedHistoricalHandler = onEmbeddedHistorical
-        self.patchStatusHandler = onPatchStatus
-        self.lifeCountHandler = onLifeCount
-        self.readyHandler = onReady
-        self.rawReadHandler = onRawRead
+        lock.withLock {
+            self.readingHandler = onReading
+            self.disconnectHandler = onDisconnect
+            self.statusHandler = onStatus
+            self.historicalPageHandler = onHistoricalPage
+            self.clinicalRecordHandler = onClinicalRecord
+            self.embeddedHistoricalHandler = onEmbeddedHistorical
+            self.patchStatusHandler = onPatchStatus
+            self.lifeCountHandler = onLifeCount
+            self.readyHandler = onReady
+            self.rawReadHandler = onRawRead
+        }
     }
 
     /// Build + emit a captured read record (debug inspector). Thread-safe.
     private func emitRead(_ channel: String, summary: String, at receivedAt: Date,
                           _ properties: [(String, String)]) {
-        lock.lock()
-        readSequence += 1
-        let seq = readSequence
-        let handler = rawReadHandler
-        lock.unlock()
+        let (seq, handler) = lock.withLock {
+            readSequence += 1
+            return (readSequence, rawReadHandler)
+        }
         guard let handler else { return }
         handler(LibreLoopStreamReadRecord(id: seq, receivedAt: receivedAt, channel: channel,
                                           summary: summary, properties: properties))
     }
 
     private func emitStatus(_ text: String) {
-        lock.lock()
-        let h = statusHandler
-        lock.unlock()
+        let h = lock.withLock { statusHandler }
         h?(text)
     }
 
     public func start() {
-        lock.lock()
-        let alreadyRunning = task != nil
-        lock.unlock()
+        let alreadyRunning = lock.withLock { task != nil }
         guard !alreadyRunning else { return }
 
         let newTask = Task { [weak self] in
@@ -196,9 +191,7 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
                 // regular-data channels (glucose/patchStatus) never armed, so iOS
                 // gets no notification to wake us on: closing avoids that dead state.
                 self.scanner.cancelConnection(self.session.peripheral)
-                self.lock.lock()
-                let handler = self.disconnectHandler
-                self.lock.unlock()
+                let handler = self.lock.withLock { self.disconnectHandler }
                 handler?()
                 return
             }
@@ -206,9 +199,7 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
             // backfill request) can race ahead of the first realtime packet
             // and not miss notifications. Both are on the same session queue
             // so order is preserved.
-            self.lock.lock()
-            let ready = self.readyHandler
-            self.lock.unlock()
+            let ready = self.lock.withLock { self.readyHandler }
             ready?()
             llog("monitor consuming session.notifications()")
             self.emitStatus("Waiting for first reading")
@@ -222,14 +213,12 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
             }
             self.stopSilenceWatchdog()
             llog("monitor notification stream ended after \(eventCount) events; invoking disconnect handler")
-            self.lock.lock()
-            let handler = self.disconnectHandler
-            self.lock.unlock()
+            let handler = self.lock.withLock { self.disconnectHandler }
             handler?()
         }
-        lock.lock()
-        task = newTask
-        lock.unlock()
+        lock.withLock {
+            task = newTask
+        }
     }
 
     /// Per-channel data-plane silence watchdog. Instead of blanket-toggling every
@@ -245,65 +234,65 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
     /// Vendor parity: Abbott's app reads patchStatus when the notify stream goes
     /// quiet. Churn is spent only on a channel proven un-armed.
     private func startSilenceWatchdog() {
-        lock.lock()
-        let now = Date()
-        lastPatchStatusAt = now   // grace from the start of consumption
-        lastGlucoseAt = now
-        silenceWatchdog?.cancel()
-        let wd = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 20_000_000_000)   // check every 20s
-                guard let self, !Task.isCancelled else { return }
-                self.lock.lock()
-                let psLast = self.lastPatchStatusAt
-                let glLast = self.lastGlucoseAt
-                self.lock.unlock()
-                let t = Date()
-                let psQuiet = psLast.map { t.timeIntervalSince($0) } ?? .greatestFiniteMagnitude
-                let glQuiet = glLast.map { t.timeIntervalSince($0) } ?? .greatestFiniteMagnitude
+        lock.withLock {
+            let now = Date()
+            lastPatchStatusAt = now   // grace from the start of consumption
+            lastGlucoseAt = now
+            silenceWatchdog?.cancel()
+            let wd = Task { [weak self] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 20_000_000_000)   // check every 20s
+                    guard let self, !Task.isCancelled else { return }
+                    let (psLast, glLast) = self.lock.withLock {
+                        (self.lastPatchStatusAt, self.lastGlucoseAt)
+                    }
+                    let t = Date()
+                    let psQuiet = psLast.map { t.timeIntervalSince($0) } ?? .greatestFiniteMagnitude
+                    let glQuiet = glLast.map { t.timeIntervalSince($0) } ?? .greatestFiniteMagnitude
 
-                if psQuiet >= 60 {
-                    if psQuiet >= 150 {
-                        llog("patchStatus quiet \(Int(psQuiet))s; targeted CCCD re-arm")
+                    if psQuiet >= 60 {
+                        if psQuiet >= 150 {
+                            llog("patchStatus quiet \(Int(psQuiet))s; targeted CCCD re-arm")
+                            try? await self.session.refreshDataPlaneNotifications(
+                                characteristics: [LibreSensorGATT.Char.patchStatus],
+                                forceReArm: [LibreSensorGATT.Char.patchStatus]
+                            )
+                        }
+                        llog("patchStatus quiet \(Int(psQuiet))s; issuing direct read (vendor-parity fallback)")
+                        do {
+                            _ = try await self.session.readPatchStatus()
+                        } catch {
+                            llog("readPatchStatus failed: \(String(describing: error))")
+                        }
+                        // Bump so we don't re-issue every tick while awaiting the
+                        // result; a real patchStatus frame (read or notify) resets it.
+                        self.lock.withLock {
+                            self.lastPatchStatusAt = Date()
+                        }
+                    }
+
+                    if glQuiet >= 150 {
+                        llog("glucose quiet \(Int(glQuiet))s; targeted CCCD re-arm")
                         try? await self.session.refreshDataPlaneNotifications(
-                            characteristics: [LibreSensorGATT.Char.patchStatus],
-                            forceReArm: [LibreSensorGATT.Char.patchStatus]
+                            characteristics: [LibreSensorGATT.Char.glucoseData],
+                            forceReArm: [LibreSensorGATT.Char.glucoseData]
                         )
+                        self.lock.withLock {
+                            self.lastGlucoseAt = Date()
+                        }
                     }
-                    llog("patchStatus quiet \(Int(psQuiet))s; issuing direct read (vendor-parity fallback)")
-                    do {
-                        _ = try await self.session.readPatchStatus()
-                    } catch {
-                        llog("readPatchStatus failed: \(String(describing: error))")
-                    }
-                    // Bump so we don't re-issue every tick while awaiting the
-                    // result; a real patchStatus frame (read or notify) resets it.
-                    self.lock.lock()
-                    self.lastPatchStatusAt = Date()
-                    self.lock.unlock()
-                }
-
-                if glQuiet >= 150 {
-                    llog("glucose quiet \(Int(glQuiet))s; targeted CCCD re-arm")
-                    try? await self.session.refreshDataPlaneNotifications(
-                        characteristics: [LibreSensorGATT.Char.glucoseData],
-                        forceReArm: [LibreSensorGATT.Char.glucoseData]
-                    )
-                    self.lock.lock()
-                    self.lastGlucoseAt = Date()
-                    self.lock.unlock()
                 }
             }
+            silenceWatchdog = wd
         }
-        silenceWatchdog = wd
-        lock.unlock()
     }
 
     private func stopSilenceWatchdog() {
-        lock.lock()
-        let wd = silenceWatchdog
-        silenceWatchdog = nil
-        lock.unlock()
+        let wd = lock.withLock {
+            let wd = silenceWatchdog
+            silenceWatchdog = nil
+            return wd
+        }
         wd?.cancel()
     }
 
@@ -417,10 +406,10 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
         case .clinical:
             command = PatchControlCommand.clinicalBackfillGreaterEqual(lifeCount: fromLifeCount)
         }
-        lock.lock()
-        outboundSequence &+= 1
-        let sequence = outboundSequence
-        lock.unlock()
+        let sequence = lock.withLock {
+            outboundSequence &+= 1
+            return outboundSequence
+        }
         let frame = try crypto.encrypt(
             plaintext: command.plaintext,
             sequence: sequence,
@@ -435,12 +424,13 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
     }
 
     public func stop() {
-        lock.lock()
-        let t = task
-        task = nil
-        let wd = silenceWatchdog
-        silenceWatchdog = nil
-        lock.unlock()
+        let (t, wd) = lock.withLock {
+            let t = task
+            task = nil
+            let wd = silenceWatchdog
+            silenceWatchdog = nil
+            return (t, wd)
+        }
         t?.cancel()
         wd?.cancel()
     }
@@ -465,10 +455,10 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
                 // is silent for ~60 min after activation -- without this
                 // path activatedAt stays nil for the entire warmup window.
                 llog("patch status currentLC=\(status.currentLifeCount) lifeCount=\(status.lifeCount) state=\(status.patchStateKind)")
-                lock.lock()
-                let handler = patchStatusHandler
-                lastPatchStatusAt = event.receivedAt   // feed the read-fallback watchdog
-                lock.unlock()
+                let handler = lock.withLock {
+                    lastPatchStatusAt = event.receivedAt   // feed the read-fallback watchdog
+                    return patchStatusHandler
+                }
                 handler?(status)
                 emitRead("Patch status", summary: "LC \(status.currentLifeCount) \(status.patchStateKind)", at: event.receivedAt, [
                     ("currentLifeCount", "\(status.currentLifeCount)"),
@@ -482,9 +472,7 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
                 ])
             case .historicalReadingPage(let page):
                 llog("historical page startLC=\(page.startLifeCount) endLC=\(page.endLifeCount) samples=\(page.samples.count)")
-                lock.lock()
-                let handler = historicalPageHandler
-                lock.unlock()
+                let handler = lock.withLock { historicalPageHandler }
                 handler?(page)
                 var pageProps: [(String, String)] = [
                     ("startLifeCount", "\(page.startLifeCount)"),
@@ -499,9 +487,7 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
                 let cur = record.currentGlucoseMgDL.map(String.init) ?? "nil"
                 let hist = record.historicGlucoseMgDL.map(String.init) ?? "nil"
                 llog("clinical record lifeCount=\(record.lifeCount) current=\(cur) mg/dL historicRaw=\(hist) mg/dL")
-                lock.lock()
-                let handler = clinicalRecordHandler
-                lock.unlock()
+                let handler = lock.withLock { clinicalRecordHandler }
                 handler?(record)
                 emitRead("Clinical", summary: "LC \(record.lifeCount) cur \(cur)", at: event.receivedAt, [
                     ("lifeCount", "\(record.lifeCount)"),
@@ -552,32 +538,29 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
                 // Surface lifeCount unconditionally -- warmup readings have
                 // valid lifeCount but nil mgdl, and that's still enough to
                 // pin activatedAt.
-                lock.lock()
-                let lcHandler = lifeCountHandler
-                lastGlucoseAt = event.receivedAt   // feed the silence watchdog
-                // Stuck-value detector: count consecutive *advancing* frames that
-                // repeat the raw current-glucose word. A same-minute resend
-                // (lifeCount unchanged) doesn't count; a new lifeCount carrying
-                // an identical word is a held/frozen value.
-                if reading.lifeCount == lastGlucoseWordLifeCount {
-                    // same-minute resend — ignore for the stuck run
-                } else if lastGlucoseWord == reading.currentWord {
-                    stuckGlucoseRun += 1
-                } else {
-                    stuckGlucoseRun = 0
+                let (lcHandler, stuckRun) = lock.withLock {
+                    lastGlucoseAt = event.receivedAt   // feed the silence watchdog
+                    // Stuck-value detector: count consecutive *advancing* frames that
+                    // repeat the raw current-glucose word. A same-minute resend
+                    // (lifeCount unchanged) doesn't count; a new lifeCount carrying
+                    // an identical word is a held/frozen value.
+                    if reading.lifeCount == lastGlucoseWordLifeCount {
+                        // same-minute resend — ignore for the stuck run
+                    } else if lastGlucoseWord == reading.currentWord {
+                        stuckGlucoseRun += 1
+                    } else {
+                        stuckGlucoseRun = 0
+                    }
+                    lastGlucoseWord = reading.currentWord
+                    lastGlucoseWordLifeCount = reading.lifeCount
+                    return (lifeCountHandler, stuckGlucoseRun)
                 }
-                lastGlucoseWord = reading.currentWord
-                lastGlucoseWordLifeCount = reading.lifeCount
-                let stuckRun = stuckGlucoseRun
-                lock.unlock()
                 if stuckRun >= 3 {
                     llog("STUCK: current glucose word \(String(format: "0x%04x", reading.currentWord)) unchanged across \(stuckRun + 1) advancing frames (lifeCount=\(reading.lifeCount) mgdl=\(mgdlStr) dq=\(reading.dqError))")
                 }
                 lcHandler?(reading.lifeCount)
                 if let sample = Self.makeSample(from: reading, assessment: assessment, receivedAt: event.receivedAt) {
-                    lock.lock()
-                    let handler = readingHandler
-                    lock.unlock()
+                    let handler = lock.withLock { readingHandler }
                     handler?(sample)
                 }
                 // Surface the realtime packet's paired 5-min historical
@@ -588,9 +571,7 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
                 if reading.isHistoricalGlucoseValid,
                    let histMgDL = reading.historicalGlucoseMgDL,
                    reading.historicalLifeCount > 0 {
-                    lock.lock()
-                    let embedded = embeddedHistoricalHandler
-                    lock.unlock()
+                    let embedded = lock.withLock { embeddedHistoricalHandler }
                     embedded?(reading.historicalLifeCount, histMgDL)
                 }
                 let histLag = Int(reading.lifeCount) - Int(reading.historicalLifeCount)
