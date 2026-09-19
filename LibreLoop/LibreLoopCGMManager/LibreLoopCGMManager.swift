@@ -746,7 +746,9 @@ public final class LibreLoopCGMManager: CGMManager {
         }
     }
 
-    public func acknowledgeAlert(alertIdentifier: LoopKit.Alert.AlertIdentifier, completion: @escaping ((any Error)?) -> Void) {}
+    public func acknowledgeAlert(alertIdentifier: LoopKit.Alert.AlertIdentifier, completion: @escaping ((any Error)?) -> Void) {
+        completion(nil)
+    }
 
     // AlertSoundVendor.
     public func getSoundBaseURL() -> URL? { nil }
