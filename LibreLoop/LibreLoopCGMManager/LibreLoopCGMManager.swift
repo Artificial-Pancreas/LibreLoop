@@ -294,6 +294,7 @@ public final class LibreLoopCGMManager: CGMManager {
     }
 
     func recordSample(_ sample: LibreLoopGlucoseSample) {
+        recentSamples.removeAll { $0.lifeCount == sample.lifeCount && $0.source != .realtime }
         recentSamples.insert(sample, at: 0)
         if recentSamples.count > Self.recentSamplesCap {
             recentSamples.removeLast(recentSamples.count - Self.recentSamplesCap)
@@ -302,6 +303,18 @@ public final class LibreLoopCGMManager: CGMManager {
         // app launch can repopulate the Last Reading card immediately.
         var updated = state
         updated.latestSample = sample
+        updated.recentSamples = Array(recentSamples.prefix(LibreLoopCGMManagerState.recentSamplesPersistenceCap))
+        setState(updated)
+    }
+
+    /// Adds backfilled readings to Recent Readings, in lifeCount order, without
+    /// touching the Last Reading card.
+    func recordBackfillSamples(_ samples: [LibreLoopGlucoseSample]) {
+        let known = Set(recentSamples.map(\.lifeCount))
+        let added = samples.filter { !known.contains($0.lifeCount) }
+        guard !added.isEmpty else { return }
+        recentSamples = Array((recentSamples + added).sorted { $0.lifeCount > $1.lifeCount }.prefix(Self.recentSamplesCap))
+        var updated = state
         updated.recentSamples = Array(recentSamples.prefix(LibreLoopCGMManagerState.recentSamplesPersistenceCap))
         setState(updated)
     }
@@ -352,14 +365,13 @@ public final class LibreLoopCGMManager: CGMManager {
         // deviceIdentifier still resolves to the session that's ending.
         // Matches the .sensorStart we emitted at pairing time so Loop's
         // CgmEventStore has a clean session boundary.
-        if let serial = state.sensorSerial {
-            let identifier = Self.deviceIdentifier(serial: serial, receiverID: state.receiverID)
+        if let serial = state.sensorSerial, !state.sensorEndRecorded {
             let event = PersistedCgmEvent(
                 date: Date(),
                 type: .sensorEnd,
-                deviceIdentifier: identifier
+                deviceIdentifier: serial
             )
-            llog("emitting CgmEvent .sensorEnd deviceIdentifier=\(identifier)")
+            llog("emitting CgmEvent .sensorEnd deviceIdentifier=\(serial)")
             delegateQueue?.async { [weak self] in
                 guard let self else { return }
                 self.cgmManagerDelegate?.cgmManager(self, hasNew: [event])
@@ -378,6 +390,8 @@ public final class LibreLoopCGMManager: CGMManager {
         blank.latestSample = nil
         blank.recentSamples = []
         blank.expiryAlertsScheduledForActivatedAt = nil
+        blank.reportedSensorIssue = nil
+        blank.sensorEndRecorded = false
         setState(blank)
     }
 
@@ -417,9 +431,9 @@ public final class LibreLoopCGMManager: CGMManager {
     }
 
     public var device: HKDevice? {
-        HKDevice(name: "FreeStyle Libre 3",
+        HKDevice(name: "FreeStyle \(state.sensorModel ?? "Libre 3")",
                  manufacturer: "Abbott",
-                 model: "Libre 3",
+                 model: state.sensorModel,
                  hardwareVersion: nil,
                  firmwareVersion: state.firmwareVersion,
                  softwareVersion: nil,
