@@ -344,17 +344,18 @@ extension LibreLoopCGMManager {
         guard issue != state.reportedSensorIssue || ends else { return }
 
         var events: [PersistedCgmEvent] = []
-        if let issue, issue != state.reportedSensorIssue {
-            var failed = false
-            if case .failed = sensorLifecycle { failed = true }
-            events.append(PersistedCgmEvent(
-                date: Date(),
-                type: .sensorIssue,
-                deviceIdentifier: serial,
-                error: CgmEventError(code: issue, isFatal: failed),
-                metadata: ["errorData": String(status.errorData), "patchState": String(status.patchState)]
-            ))
-        }
+//        .sensorIssue only exists in next-dev
+//        if let issue, issue != state.reportedSensorIssue {
+//            var failed = false
+//            if case .failed = sensorLifecycle { failed = true }
+//            events.append(PersistedCgmEvent(
+//                date: Date(),
+//                type: .sensorIssue,
+//                deviceIdentifier: serial,
+//                error: CgmEventError(code: issue, isFatal: failed),
+//                metadata: ["errorData": String(status.errorData), "patchState": String(status.patchState)]
+//            ))
+//        }
         if ends {
             events.append(PersistedCgmEvent(date: Date(), type: .sensorEnd, deviceIdentifier: serial))
         }
@@ -704,8 +705,7 @@ extension LibreLoopCGMManager {
                 // duplicate point at the same timestamp.
                 syncIdentifier: "libreloop-\(serial)-\(sample.lifeCount)",
                 syncVersion: 1,
-                device: device,
-                isBackfill: true
+                device: device
             ))
             displaySamples.append(LibreLoopGlucoseSample(
                 date: date,
@@ -820,8 +820,7 @@ extension LibreLoopCGMManager {
             wasUserEntered: false,
             syncIdentifier: "libreloop-\(serial)-\(lifeCount)",
             syncVersion: 1,
-            device: device,
-            isBackfill: true
+            device: device
         )
         backfillForwardedLifeCounts.insert(lifeCount)
         recordBackfillSamples([LibreLoopGlucoseSample(
