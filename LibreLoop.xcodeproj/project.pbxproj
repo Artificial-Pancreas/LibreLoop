@@ -531,7 +531,7 @@
 			mainGroup = 097D0DEEAE5496094D5F3C2C;
 			minimizedProjectReferenceProxies = 0;
 			packageReferences = (
-				830716FE330C1EE3A3796BFF /* XCRemoteSwiftPackageReference "RoundWhiteDiscKit" */,
+				830716FE330C1EE3A3796BFF /* XCLocalSwiftPackageReference "../RoundWhiteDiscKit" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 8EEF9D481BA323074C5A1442 /* Products */;
@@ -1041,21 +1041,17 @@
 		};
 /* End XCConfigurationList section */
 
-/* Begin XCRemoteSwiftPackageReference section */
-		830716FE330C1EE3A3796BFF /* XCRemoteSwiftPackageReference "RoundWhiteDiscKit" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/airedev326/RoundWhiteDiscKit.git";
-			requirement = {
-				kind = revision;
-				revision = e66da6cc34680fecbbb87812279163dcc1a842b4;
-			};
+/* Begin XCLocalSwiftPackageReference section */
+		830716FE330C1EE3A3796BFF /* XCLocalSwiftPackageReference "../RoundWhiteDiscKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../RoundWhiteDiscKit;
 		};
-/* End XCRemoteSwiftPackageReference section */
+/* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
 		3BCF8A4D19616F87A259E2A7 /* RoundWhiteDiscKit */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 830716FE330C1EE3A3796BFF /* XCRemoteSwiftPackageReference "RoundWhiteDiscKit" */;
+			package = 830716FE330C1EE3A3796BFF /* XCLocalSwiftPackageReference "../RoundWhiteDiscKit" */;
 			productName = RoundWhiteDiscKit;
 		};
 /* End XCSwiftPackageProductDependency section */
