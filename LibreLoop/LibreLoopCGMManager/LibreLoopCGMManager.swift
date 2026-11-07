@@ -359,7 +359,7 @@ public final class LibreLoopCGMManager: CGMManager {
         recentSamples = []
         hasIssuedReScanAlert = false
         lastSensorAttention = nil
-        Task { await retractAllAlerts() }
+        retractAllAlerts()
         // Emit .sensorEnd before we blank state so the event's
         // deviceIdentifier still resolves to the session that's ending.
         // Matches the .sensorStart we emitted at pairing time so Loop's
@@ -821,7 +821,10 @@ public final class LibreLoopCGMManager: CGMManager {
 
     // AlertResponder. Tidepool-sync's LoopKit replaced the completion-handler
     // signature with async/throws.
-    public func acknowledgeAlert(alertIdentifier: Alert.AlertIdentifier) async throws {}
+    // iAPS: completion-style on the `dev` LoopKit.
+    public func acknowledgeAlert(alertIdentifier: Alert.AlertIdentifier, completion: @escaping (Error?) -> Void) {
+        completion(nil)
+    }
 
     // AlertSoundVendor.
     public func getSoundBaseURL() -> URL? { nil }
@@ -848,7 +851,7 @@ public final class LibreLoopCGMManager: CGMManager {
         }
     }
 
-    public func delete() async {
+    public func delete(completion: @escaping () -> Void) {
         // The central is shared and outlives this manager, so a deleted manager
         // must stop driving it — otherwise its event listener + reconnect loop
         // keep issuing connect/scan on the shared central and fight whatever
@@ -876,8 +879,16 @@ public final class LibreLoopCGMManager: CGMManager {
                 scanner.cancelConnection(peripheral)
             }
         }
-        await retractAllAlerts()
-        await cgmManagerDelegate?.cgmManagerWantsDeletion(self)
+        // iAPS: alert calls are synchronous on the `dev` LoopKit; the retractions are in before
+        // the deletion notice without awaiting.
+        retractAllAlerts()
+        notifyDelegateOfDeletion(completion: completion)
+    }
+
+    public func delete() async {
+        await withCheckedContinuation { continuation in
+            delete { continuation.resume() }
+        }
     }
 }
 

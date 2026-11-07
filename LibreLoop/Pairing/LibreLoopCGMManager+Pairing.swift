@@ -39,21 +39,21 @@ extension LibreLoopCGMManager {
             llog("expiry alerts: scheduling \(alerts.count) alert(s) for activatedAt=\(activatedAt)")
             Task {
                 for alert in alerts {
-                    await delegate?.issueAlert(alert)
+                    delegate?.issueAlert(alert)
                 }
             }
         }
         return activatedAt
     }
 
-    func retractAllAlerts() async {
+    func retractAllAlerts() {
         let delegate = cgmManagerDelegate
         let identifiers = Self.allAlertIdentifiers.map {
             Alert.Identifier(managerIdentifier: pluginIdentifier, alertIdentifier: $0)
         }
         llog("alerts: retracting \(identifiers.count) identifier(s)")
         for identifier in identifiers {
-            await delegate?.retractAlert(identifier: identifier)
+            delegate?.retractAlert(identifier: identifier)
         }
     }
 
@@ -174,7 +174,7 @@ extension LibreLoopCGMManager {
             hasIssuedReScanAlert = false
             let id = Alert.Identifier(managerIdentifier: pluginIdentifier, alertIdentifier: Self.needsReScanAlertID)
             let delegate = cgmManagerDelegate
-            Task { await delegate?.retractAlert(identifier: id) }
+            delegate?.retractAlert(identifier: id)
         }
         if let previous = self.monitor, previous !== monitor {
             llog("adopt: stopping previous monitor")
@@ -463,7 +463,7 @@ extension LibreLoopCGMManager {
                 updated.alertedSensorEvent = nil
                 setState(updated)
             }
-            Task { await delegate?.retractAlert(identifier: identifier) }
+            delegate?.retractAlert(identifier: identifier)
             return
         }
         if state.alertedSensorEvent != eventKey {
@@ -478,7 +478,7 @@ extension LibreLoopCGMManager {
             trigger: .immediate,
             interruptionLevel: content.level
         )
-        Task { await delegate?.issueAlert(alert) }
+        delegate?.issueAlert(alert)
     }
 
     /// Handle the per-minute lifeCount surfaced by every realtime glucose
@@ -1183,7 +1183,7 @@ extension LibreLoopCGMManager {
             trigger: .immediate,
             interruptionLevel: .timeSensitive
         )
-        Task { await delegate?.issueAlert(alert) }
+        delegate?.issueAlert(alert)
     }
 
     private static func mapTrend(_ trend: LibreLoopGlucoseSample.Trend) -> GlucoseTrend? {
