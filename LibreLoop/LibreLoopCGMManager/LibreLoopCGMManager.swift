@@ -18,15 +18,26 @@ public final class LibreLoopCGMManager: CGMManager {
     public var pluginIdentifier: String { Self.pluginIdentifier }
     public func markAsDepedency(_ isDependency: Bool) {}
 
-    public weak var cgmManagerDelegate: CGMManagerDelegate? {
-        didSet { flushPendingDeviceLog() }
+    public var cgmManagerDelegate: CGMManagerDelegate? {
+        get { cgmDelegate.delegate }
+        set {
+            cgmDelegate.delegate = newValue
+            flushPendingDeviceLog()
+        }
+    }
+
+    let cgmDelegate = WeakSynchronizedDelegate<CGMManagerDelegate>()
+
+    // iAPS: the `dev` LoopKit still routes delegate calls through a queue the host sets.
+    public var delegateQueue: DispatchQueue! {
+        get { cgmDelegate.queue }
+        set { cgmDelegate.queue = newValue }
     }
 
     /// First-time pairing runs on a manager Loop hasn't adopted yet, so its
     /// device-log lines are held until the delegate arrives.
     private let pendingDeviceLogLock = NSLock()
     private var pendingDeviceLog: [(identifier: String?, type: DeviceLogEntryType, message: String)] = []
-    public var delegateQueue: DispatchQueue!
 
     public internal(set) var state: LibreLoopCGMManagerState
     public var rawState: CGMManager.RawStateValue { state.rawValue }
@@ -371,9 +382,9 @@ public final class LibreLoopCGMManager: CGMManager {
                 deviceIdentifier: serial
             )
             llog("emitting CgmEvent .sensorEnd deviceIdentifier=\(serial)")
-            delegateQueue?.async { [weak self] in
+            cgmDelegate.notify { [weak self] delegate in
                 guard let self else { return }
-                self.cgmManagerDelegate?.cgmManager(self, hasNew: [event])
+                delegate?.cgmManager(self, hasNew: [event])
             }
         }
         var blank = state
@@ -714,15 +725,7 @@ public final class LibreLoopCGMManager: CGMManager {
     }
 
     private func forwardDeviceLog(identifier: String?, type: DeviceLogEntryType, message: String) {
-        let forward = { [weak self] in
-            guard let self else { return }
-            self.cgmManagerDelegate?.deviceManager(self, logEventForDeviceIdentifier: identifier, type: type, message: message, completion: nil)
-        }
-        if let queue = delegateQueue {
-            queue.async(execute: forward)
-        } else {
-            forward()
-        }
+        cgmManagerDelegate?.deviceManager(self, logEventForDeviceIdentifier: identifier, type: type, message: message, completion: nil)
     }
 
     private func observeAppLifecycle() {
@@ -851,40 +854,45 @@ public final class LibreLoopCGMManager: CGMManager {
         }
     }
 
+    // On the main actor, where the scanner events and reconnects that share this state run.
+    // iAPS: completion-style on the `dev` LoopKit; delete() async below wraps it for callers
+    // written against next-dev.
     public func delete(completion: @escaping () -> Void) {
-        // The central is shared and outlives this manager, so a deleted manager
-        // must stop driving it — otherwise its event listener + reconnect loop
-        // keep issuing connect/scan on the shared central and fight whatever
-        // manager replaces it (e.g. a re-add). Cancel our reconnect, drop our
-        // listener, and release any link/scan we started.
-        // Set first so the disconnect we trigger below (and any in-flight CB
-        // callback) can't re-arm a reconnect via handleMonitorDisconnect /
-        // scheduleReconnect.
-        isDeleted = true
-        cancelReconnect()
-        // A non-nil listener task means the lazy `scanner` was initialized, so
-        // it's safe to touch without forcing central creation on a never-paired
-        // manager being deleted.
-        let scannerWasInitialized = eventListenerTask != nil
-        eventListenerTask?.cancel()
-        eventListenerTask = nil
-        // Drop the live monitor and its BLE link so no session of ours lingers
-        // on the shared central to collide with a future re-add's handshake.
-        monitor?.stop()
-        monitor = nil
-        if scannerWasInitialized {
-            scanner.stopScan()
-            if let id = state.peripheralID,
-               let peripheral = scanner.retrievePeripherals(withIdentifiers: [id]).first {
-                scanner.cancelConnection(peripheral)
+        Task { @MainActor [self] in
+            // The central is shared and outlives this manager, so a deleted manager
+            // must stop driving it — otherwise its event listener + reconnect loop
+            // keep issuing connect/scan on the shared central and fight whatever
+            // manager replaces it (e.g. a re-add). Cancel our reconnect, drop our
+            // listener, and release any link/scan we started.
+            // Set first so the disconnect we trigger below (and any in-flight CB
+            // callback) can't re-arm a reconnect via handleMonitorDisconnect /
+            // scheduleReconnect.
+            isDeleted = true
+            cancelReconnect()
+            // A non-nil listener task means the lazy `scanner` was initialized, so
+            // it's safe to touch without forcing central creation on a never-paired
+            // manager being deleted.
+            let scannerWasInitialized = eventListenerTask != nil
+            eventListenerTask?.cancel()
+            eventListenerTask = nil
+            // Drop the live monitor and its BLE link so no session of ours lingers
+            // on the shared central to collide with a future re-add's handshake.
+            monitor?.stop()
+            monitor = nil
+            if scannerWasInitialized {
+                scanner.stopScan()
+                if let id = state.peripheralID,
+                   let peripheral = scanner.retrievePeripherals(withIdentifiers: [id]).first {
+                    scanner.cancelConnection(peripheral)
+                }
             }
+            // The retractions and the deletion notice go through the same delegate queue, in order.
+            retractAllAlerts()
+            notifyDelegateOfDeletion(completion: completion)
         }
-        // iAPS: alert calls are synchronous on the `dev` LoopKit; the retractions are in before
-        // the deletion notice without awaiting.
-        retractAllAlerts()
-        notifyDelegateOfDeletion(completion: completion)
     }
 
+    @MainActor
     public func delete() async {
         await withCheckedContinuation { continuation in
             delete { continuation.resume() }
